@@ -1,6 +1,6 @@
 import { db } from "@/db";
-import { platformConnections, customers, conversations, messages } from "@/db/schema";
-import { eq, and, sql } from "drizzle-orm";
+import { platformConnections, customers } from "@/db/schema";
+import { eq, and } from "drizzle-orm";
 
 export async function syncFacebookCustomers(tenantId: string, connectionId: string): Promise<{ added: number; updated: number }> {
   const connection = await db.query.platformConnections.findFirst({
@@ -15,18 +15,19 @@ export async function syncFacebookCustomers(tenantId: string, connectionId: stri
 
   for (const page of pages) {
     const pageToken = page.accessToken || token;
-
     const fbCustomers = new Map<string, { name: string; picture: string; type: string }>();
 
+    // 1. Conversation participants (DMs)
     try {
       const convRes = await fetch(
         `https://graph.facebook.com/v21.0/${page.id}/conversations?fields=participants,updated_time&limit=100&access_token=${pageToken}`
       );
       const convData = await convRes.json();
-      if (convData.data) {
+      if (convData.error) {
+        console.warn("FB API conv error:", convData.error.message);
+      } else if (convData.data) {
         for (const conv of convData.data) {
-          const participants = conv.participants?.data || [];
-          for (const p of participants) {
+          for (const p of conv.participants?.data || []) {
             if (p.id !== page.id) {
               const existing = fbCustomers.get(p.id);
               if (!existing || new Date(conv.updated_time) > new Date()) {
@@ -41,18 +42,20 @@ export async function syncFacebookCustomers(tenantId: string, connectionId: stri
         }
       }
     } catch (e) {
-      console.warn("Failed to sync conversations for page", page.id);
+      console.warn("Failed to sync conversations for page", page.id, e);
     }
 
+    // 2. Post commenters (using /posts instead of /feed, higher limit)
     try {
       const feedRes = await fetch(
-        `https://graph.facebook.com/v21.0/${page.id}/feed?fields=comments{from,name,message,created_time},created_time&limit=25&access_token=${pageToken}`
+        `https://graph.facebook.com/v21.0/${page.id}/posts?fields=comments.limit(100){from,name,message,created_time},created_time&limit=25&access_token=${pageToken}`
       );
       const feedData = await feedRes.json();
-      if (feedData.data) {
+      if (feedData.error) {
+        console.warn("FB API posts error:", feedData.error.message);
+      } else if (feedData.data) {
         for (const post of feedData.data) {
-          const comments = post.comments?.data || [];
-          for (const c of comments) {
+          for (const c of post.comments?.data || []) {
             if (c.from?.id && c.from.id !== page.id) {
               fbCustomers.set(c.from.id, {
                 name: c.from.name || "Unknown",
@@ -64,9 +67,10 @@ export async function syncFacebookCustomers(tenantId: string, connectionId: stri
         }
       }
     } catch (e) {
-      console.warn("Failed to sync comments for page", page.id);
+      console.warn("Failed to sync comments for page", page.id, e);
     }
 
+    // Save to DB
     for (const [platformUserId, info] of fbCustomers) {
       const existing = await db.query.customers.findFirst({
         where: and(
