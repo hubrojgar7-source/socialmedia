@@ -13,7 +13,8 @@ export async function POST(req: Request) {
     const result = await uploadToImageKit(file);
     return NextResponse.json({ url: result.url, fileId: result.fileId });
   } catch (error) {
-    console.error("Upload error:", error);
-    return NextResponse.json({ error: "Upload failed" }, { status: 500 });
+    const msg = error instanceof Error ? error.message : "Upload failed";
+    console.error("Upload error:", msg);
+    return NextResponse.json({ error: msg }, { status: 500 });
   }
 }

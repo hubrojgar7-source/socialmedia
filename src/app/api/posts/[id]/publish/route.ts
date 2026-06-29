@@ -33,7 +33,27 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     });
     if (!conn) continue;
 
-    const token = conn.accessToken;
+    // For page destinations, use the page-specific access token, not the user token
+    let token = conn.accessToken;
+    let destinationId = dest.destinationId!;
+    const metadata = conn.metadata as any;
+
+    if (dest.destinationType === "page") {
+      const page = metadata?.pages?.find((p: any) => p.id === dest.destinationId);
+      if (page?.accessToken) {
+        token = page.accessToken;
+        destinationId = page.id;
+      }
+    } else if (dest.destinationType === "marketplace") {
+      const page = metadata?.pages?.find((p: any) => p.id === dest.destinationId);
+      if (page?.accessToken) {
+        token = page.accessToken;
+        destinationId = page.id;
+      }
+    } else if (dest.destinationType === "group") {
+      // Groups use the user token
+    }
+
     const message = post.title + (post.description ? `\n\n${post.description}` : "");
     const imageUrl = post.imageUrls?.[0];
 
@@ -45,14 +65,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     let result;
     switch (dest.destinationType) {
       case "page":
-        result = await postToPage(dest.destinationId!, token, message, imageUrl);
+        result = await postToPage(destinationId, token, message, imageUrl);
         break;
       case "group":
         result = await postToGroup(dest.destinationId!, token, message, imageUrl);
         break;
       case "marketplace":
         result = await postToMarketplace(
-          dest.destinationId!,
+          destinationId,
           token,
           {
             title: post.title,
