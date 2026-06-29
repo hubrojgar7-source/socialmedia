@@ -29,12 +29,18 @@ export async function POST() {
     ),
   });
 
-  const results: { connectionId: string; added: number; updated: number }[] = [];
+  if (connections.length === 0) {
+    return NextResponse.json({ synced: false, error: "No Facebook connections found. Connect Facebook first in Settings." });
+  }
 
+  const results: { connectionId: string; added: number; updated: number }[] = [];
   for (const conn of connections) {
     const r = await syncFacebookCustomers(session.user.tenantId, conn.id);
     results.push({ connectionId: conn.id, ...r });
   }
 
-  return NextResponse.json({ synced: results });
+  const totalAdded = results.reduce((s, r) => s + r.added, 0);
+  const totalUpdated = results.reduce((s, r) => s + r.updated, 0);
+
+  return NextResponse.json({ synced: true, added: totalAdded, updated: totalUpdated, connections: results });
 }

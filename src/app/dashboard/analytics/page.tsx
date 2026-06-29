@@ -3,7 +3,8 @@
 import { useEffect, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { RefreshCw } from "lucide-react";
+import { toast } from "sonner";
+import { RefreshCw, AlertCircle } from "lucide-react";
 import {
   AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
 } from "recharts";
@@ -46,20 +47,39 @@ export default function AnalyticsPage() {
   const [syncing, setSyncing] = useState(false);
   const [days, setDays] = useState(30);
   const [selectedMetrics, setSelectedMetrics] = useState<string[]>(["newConversations", "messagesReceived", "comments"]);
+  const [error, setError] = useState<string | null>(null);
 
   const fetchAnalytics = async (d: number) => {
     setLoading(true);
-    const res = await fetch(`/api/analytics?days=${d}`);
-    const data = await res.json();
-    setRecords((data.records || []).reverse());
-    setTotals(data.totals || null);
+    setError(null);
+    try {
+      const res = await fetch(`/api/analytics?days=${d}`);
+      const data = await res.json();
+      setRecords((data.records || []).reverse());
+      setTotals(data.totals || null);
+    } catch {
+      setError("Failed to load analytics");
+    }
     setLoading(false);
   };
 
   const syncNow = async () => {
     setSyncing(true);
-    await fetch("/api/analytics", { method: "POST" });
-    await fetchAnalytics(days);
+    setError(null);
+    try {
+      const res = await fetch("/api/analytics", { method: "POST" });
+      const data = await res.json();
+      if (data.error) {
+        toast.error(data.error);
+        setError(data.error);
+      } else {
+        toast.success(`Synced ${data.successCount} Facebook connection(s)`);
+      }
+      await fetchAnalytics(days);
+    } catch {
+      toast.error("Sync failed");
+      setError("Sync failed");
+    }
     setSyncing(false);
   };
 
@@ -81,10 +101,17 @@ export default function AnalyticsPage() {
         </Button>
       </div>
 
+      {error && (
+        <div className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-800 dark:bg-red-950 dark:text-red-200">
+          <AlertCircle className="h-4 w-4" />
+          {error}
+        </div>
+      )}
+
       {totals && (
         <div className="grid gap-4 md:grid-cols-6">
           <Card>
-            <CardHeader className="pb-2"><CardTitle className="text-xs font-medium">Conversations</CardTitle></CardHeader>
+            <CardHeader className="pb-2"><CardTitle className="text-xs font-medium">New Conversations</CardTitle></CardHeader>
             <CardContent><p className="text-2xl font-bold">{totals.conversations}</p></CardContent>
           </Card>
           <Card>
@@ -129,7 +156,7 @@ export default function AnalyticsPage() {
                 variant={selectedMetrics.includes(m.key) ? "default" : "outline"}
                 size="sm"
                 onClick={() => toggleMetric(m.key)}
-                style={selectedMetrics.includes(m.key) ? { backgroundColor: m.color } : {}}
+                style={selectedMetrics.includes(m.key) ? { backgroundColor: m.color, borderColor: m.color } : {}}
               >
                 {m.label}
               </Button>
@@ -139,7 +166,10 @@ export default function AnalyticsPage() {
           {loading ? (
             <p className="text-muted-foreground">Loading...</p>
           ) : records.length === 0 ? (
-            <p className="text-muted-foreground">No analytics data yet. Click "Sync Now" to pull data from Facebook.</p>
+            <div className="py-12 text-center text-muted-foreground">
+              <p className="mb-2">No analytics data yet.</p>
+              <p className="text-sm">Click "Sync Now" to pull today's data from your connected pages. Data updates daily.</p>
+            </div>
           ) : (
             <div className="space-y-8">
               <div>

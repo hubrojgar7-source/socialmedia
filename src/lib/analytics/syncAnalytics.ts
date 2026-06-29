@@ -1,36 +1,43 @@
 import { db } from "@/db";
 import { platformConnections, conversations, messages, dailyAnalytics } from "@/db/schema";
-import { eq, and, gte, sql } from "drizzle-orm";
+import { eq, and, gte, lte, inArray } from "drizzle-orm";
 
-export async function syncDailyAnalytics(tenantId: string, connectionId: string, forDate?: string): Promise<void> {
+export async function syncDailyAnalytics(tenantId: string, connectionId: string, forDate?: string): Promise<{ error?: string }> {
   const connection = await db.query.platformConnections.findFirst({
     where: and(eq(platformConnections.id, connectionId), eq(platformConnections.tenantId, tenantId)),
   });
-  if (!connection?.accessToken) return;
+  if (!connection?.accessToken) return { error: "No access token" };
 
   const today = forDate || new Date().toISOString().split("T")[0];
   const todayStart = new Date(today + "T00:00:00Z");
   const todayEnd = new Date(today + "T23:59:59Z");
 
-  const convs = await db.query.conversations.findMany({
-    where: and(
-      eq(conversations.tenantId, tenantId),
-      eq(conversations.platformConnectionId, connectionId)
-    ),
-    with: {
-      messages: true,
-    },
-  });
+  const convRows = await db
+    .select({ id: conversations.id, createdAt: conversations.createdAt })
+    .from(conversations)
+    .where(
+      and(
+        eq(conversations.tenantId, tenantId),
+        eq(conversations.platformConnectionId, connectionId)
+      )
+    );
 
-  const newConvs = convs.filter(c => {
-    const d = c.createdAt ? new Date(c.createdAt) : null;
-    return d && d >= todayStart && d <= todayEnd;
+  const convIds = convRows.map((r) => r.id);
+
+  const newConvs = convRows.filter((c) => {
+    if (!c.createdAt) return false;
+    const d = new Date(c.createdAt);
+    return d >= todayStart && d <= todayEnd;
   }).length;
 
-  const msgsReceived = convs.reduce((acc, c) => {
-    const msgs = (c as any).messages || [];
-    return acc + msgs.filter((m: any) => m.direction === "inbound").length;
-  }, 0);
+  let msgsReceived = 0;
+  if (convIds.length > 0) {
+    const msgRows = await db
+      .select({ direction: messages.direction })
+      .from(messages)
+      .where(and(inArray(messages.conversationId, convIds), eq(messages.direction, "inbound")));
+    msgsReceived = msgRows.length;
+  }
 
   const token = connection.accessToken;
   const pages = (connection.metadata as any)?.pages || [];
@@ -46,14 +53,12 @@ export async function syncDailyAnalytics(tenantId: string, connectionId: string,
       const feedData = await feedRes.json();
       if (feedData.data) {
         for (const post of feedData.data) {
-          const postComments = post.comments?.data || [];
-          const postReactions = post.reactions?.data || [];
-          comments += postComments.length;
-          likes += postReactions.filter((r: any) => r.type === "LIKE").length;
+          comments += (post.comments?.data || []).length;
+          likes += (post.reactions?.data || []).filter((r: any) => r.type === "LIKE").length;
         }
       }
     } catch (e) {
-      console.warn("Failed to fetch feed for analytics", page.id);
+      console.warn("Failed to fetch feed for analytics", page.id, e);
     }
   }
 
@@ -65,27 +70,20 @@ export async function syncDailyAnalytics(tenantId: string, connectionId: string,
     ),
   });
 
+  const record = {
+    newConversations: newConvs,
+    messagesReceived: msgsReceived,
+    comments,
+    likes,
+    sales: 0,
+    revenue: 0,
+  };
+
   if (existing) {
-    await db.update(dailyAnalytics)
-      .set({
-        newConversations: newConvs,
-        messagesReceived: msgsReceived,
-        comments,
-        likes,
-        updatedAt: new Date(),
-      })
-      .where(eq(dailyAnalytics.id, existing.id));
+    await db.update(dailyAnalytics).set({ ...record, updatedAt: new Date() }).where(eq(dailyAnalytics.id, existing.id));
   } else {
-    await db.insert(dailyAnalytics).values({
-      tenantId,
-      platformConnectionId: connectionId,
-      date: today,
-      newConversations: newConvs,
-      messagesReceived: msgsReceived,
-      comments,
-      likes,
-      sales: 0,
-      revenue: 0,
-    });
+    await db.insert(dailyAnalytics).values({ tenantId, platformConnectionId: connectionId, date: today, ...record });
   }
+
+  return {};
 }

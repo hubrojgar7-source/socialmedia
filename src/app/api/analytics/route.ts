@@ -1,7 +1,7 @@
 import { auth } from "@/lib/auth";
 import { db } from "@/db";
 import { dailyAnalytics, platformConnections } from "@/db/schema";
-import { eq, and, desc, gte, lte } from "drizzle-orm";
+import { eq, and, gte, desc } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { syncDailyAnalytics } from "@/lib/analytics/syncAnalytics";
 
@@ -17,10 +17,7 @@ export async function GET(req: Request) {
   const startStr = startDate.toISOString().split("T")[0];
 
   const records = await db.query.dailyAnalytics.findMany({
-    where: and(
-      eq(dailyAnalytics.tenantId, session.user.tenantId),
-      gte(dailyAnalytics.date, startStr)
-    ),
+    where: and(eq(dailyAnalytics.tenantId, session.user.tenantId), gte(dailyAnalytics.date, startStr)),
     orderBy: desc(dailyAnalytics.date),
   });
 
@@ -39,12 +36,9 @@ export async function GET(req: Request) {
   return NextResponse.json({ records, totals });
 }
 
-export async function POST(req: Request) {
+export async function POST() {
   const session = await auth();
   if (!session?.user?.tenantId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-
-  const body = await req.json().catch(() => ({}));
-  const forDate = body.date as string | undefined;
 
   const connections = await db.query.platformConnections.findMany({
     where: and(
@@ -54,9 +48,23 @@ export async function POST(req: Request) {
     ),
   });
 
-  for (const conn of connections) {
-    await syncDailyAnalytics(session.user.tenantId, conn.id, forDate);
+  if (connections.length === 0) {
+    return NextResponse.json({ synced: false, error: "No Facebook connections found. Connect Facebook first in Settings." });
   }
 
-  return NextResponse.json({ synced: true });
+  const results: { connectionId: string; error?: string }[] = [];
+  for (const conn of connections) {
+    const r = await syncDailyAnalytics(session.user.tenantId, conn.id);
+    results.push({ connectionId: conn.id, ...r });
+  }
+
+  const errors = results.filter((r) => r.error);
+  const success = results.filter((r) => !r.error);
+
+  return NextResponse.json({
+    synced: true,
+    connections: results.length,
+    successCount: success.length,
+    errors: errors.length > 0 ? errors.map((e) => e.error) : undefined,
+  });
 }
